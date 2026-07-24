@@ -3,8 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Carte interactive des candidatures d'alternance en électronique (BUT GEII) : localisation, statut et suivi de 45 entreprises contactées en France.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%90%3C/text%3E%3C/svg%3E">
 <title>Cartographie des candidatures d'alternance</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
 <style>
   :root {
     --ink: #0f2038;
@@ -176,6 +180,9 @@
     font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
     color: var(--text-dim); padding: 8px 10px; border-bottom: 1px solid var(--card-border);
   }
+  table.bom th.sortable { cursor: pointer; user-select: none; }
+  table.bom th.sortable:hover { color: var(--text); }
+  table.bom th .sort-arrow { display: inline-block; width: 9px; }
   table.bom td { padding: 7px 10px; border-bottom: 1px solid var(--grid-line); vertical-align: top; }
   table.bom td.ref { font-family: 'Consolas', 'SF Mono', ui-monospace, monospace; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.bom tr { cursor: pointer; }
@@ -217,7 +224,7 @@
     <div class="titleblock__meta">
       <div><span>Domaine</span><b>Électronique</b></div>
       <div><span>Fond de carte</span><b>Satellite / Plan</b></div>
-      <div><span>Date</span><b id="metaDate"></b></div>
+      <div><span>Mise à jour</span><b id="metaDate"></b></div>
       <div><span>Feuille</span><b>1 / 1</b></div>
       <div><span>Thème</span>
         <button class="theme-toggle" id="themeToggle" type="button" aria-label="Basculer entre thème clair et thème sombre">
@@ -247,7 +254,10 @@
     <section class="panel">
       <div class="panel__head">
         <h2>Nomenclature (liste complète)</h2>
-        <span id="countBadge" style="font-size:12.5px;color:var(--text-dim);"></span>
+        <span style="display:inline-flex;align-items:center;gap:10px;">
+          <span id="countBadge" style="font-size:12.5px;color:var(--text-dim);"></span>
+          <button class="theme-toggle" id="exportCsv" type="button">⭳ CSV</button>
+        </span>
       </div>
       <div class="search-row">
         <input type="text" id="search" placeholder="Rechercher une entreprise ou une ville…" aria-label="Rechercher une entreprise ou une ville">
@@ -255,7 +265,12 @@
       <div class="bom-scroll">
         <table class="bom">
           <thead>
-            <tr><th>Réf.</th><th>Entreprise</th><th>Ville</th><th>Statut</th></tr>
+            <tr>
+              <th data-sort="ref" class="sortable">Réf. <span class="sort-arrow"></span></th>
+              <th data-sort="name" class="sortable">Entreprise <span class="sort-arrow"></span></th>
+              <th data-sort="city" class="sortable">Ville <span class="sort-arrow"></span></th>
+              <th data-sort="status" class="sortable">Statut <span class="sort-arrow"></span></th>
+            </tr>
           </thead>
           <tbody id="bomBody"></tbody>
         </table>
@@ -269,6 +284,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script>
 (function () {
   "use strict";
@@ -324,7 +340,8 @@
     { ref:"E45", name:"Aquitaine Électronique", city:"Serres-Castet", lat:43.38, lon:-0.30, status:"sansreponse", note:"Jamais répondu ; sans objet depuis l'acceptation de CRESITT Industrie." }
   ];
 
-  document.getElementById("metaDate").textContent = new Date().toLocaleDateString("fr-FR", { year: "numeric", month: "long", day: "numeric" });
+  var LAST_UPDATED = "23 juillet 2026";
+  document.getElementById("metaDate").textContent = LAST_UPDATED;
   document.getElementById("countBadge").textContent = DATA.length + " entreprises";
 
   // ---------- Stats ----------
@@ -355,6 +372,9 @@
   });
 
   L.control.layers({ "Satellite": satellite, "Plan": streets }, null, { position: "topright" }).addTo(map);
+
+  var clusterGroup = L.markerClusterGroup({ maxClusterRadius: 30, spiderfyOnMaxZoom: true, showCoverageOnHover: false });
+  map.addLayer(clusterGroup);
 
   document.getElementById("mapRecenter").addEventListener("click", function () {
     map.setView(FRANCE_CENTER, FRANCE_ZOOM);
@@ -423,14 +443,18 @@
     });
     var marker = markers[ref];
     if (marker) {
-      if (panMap !== false) map.panTo(marker.getLatLng());
-      marker.openPopup();
+      if (panMap !== false) {
+        clusterGroup.zoomToShowLayer(marker, function () { marker.openPopup(); });
+      } else {
+        marker.openPopup();
+      }
     }
   }
 
   // ---------- BOM table ----------
   var bomBody = document.getElementById("bomBody");
   var searchInput = document.getElementById("search");
+  var sortState = { key: "ref", dir: 1 };
 
   function render() {
     var q = searchInput.value.trim().toLowerCase();
@@ -439,15 +463,30 @@
       if (!q) return true;
       return d.name.toLowerCase().indexOf(q) !== -1 || d.city.toLowerCase().indexOf(q) !== -1;
     });
+
+    var sk = sortState.key, sd = sortState.dir;
+    visible.sort(function (a, b) {
+      var av = (sk === "status" ? STATUS_LABEL[a.status] : a[sk]).toLowerCase();
+      var bv = (sk === "status" ? STATUS_LABEL[b.status] : b[sk]).toLowerCase();
+      if (av < bv) return -1 * sd;
+      if (av > bv) return 1 * sd;
+      return 0;
+    });
+
+    document.querySelectorAll("table.bom th.sortable").forEach(function (th) {
+      var arrow = th.querySelector(".sort-arrow");
+      arrow.textContent = th.getAttribute("data-sort") === sortState.key ? (sortState.dir === 1 ? "▲" : "▼") : "";
+    });
+
     var visibleRefs = {};
     visible.forEach(function (d) { visibleRefs[d.ref] = true; });
 
     DATA.forEach(function (d) {
       var marker = markers[d.ref];
       var shouldShow = !!visibleRefs[d.ref];
-      var onMap = map.hasLayer(marker);
-      if (shouldShow && !onMap) marker.addTo(map);
-      if (!shouldShow && onMap) map.removeLayer(marker);
+      var onCluster = clusterGroup.hasLayer(marker);
+      if (shouldShow && !onCluster) clusterGroup.addLayer(marker);
+      if (!shouldShow && onCluster) clusterGroup.removeLayer(marker);
     });
 
     bomBody.innerHTML = visible.map(function (d) {
@@ -473,6 +512,38 @@
     if (tr) { e.preventDefault(); selectEntry(tr.getAttribute("data-ref"), true); }
   });
   searchInput.addEventListener("input", render);
+
+  document.querySelectorAll("table.bom th.sortable").forEach(function (th) {
+    th.addEventListener("click", function () {
+      var key = th.getAttribute("data-sort");
+      if (sortState.key === key) sortState.dir *= -1;
+      else { sortState.key = key; sortState.dir = 1; }
+      render();
+    });
+  });
+
+  document.getElementById("exportCsv").addEventListener("click", function () {
+    var q = searchInput.value.trim().toLowerCase();
+    var rows = DATA.filter(function (d) {
+      if (!activeStatuses[d.status]) return false;
+      if (!q) return true;
+      return d.name.toLowerCase().indexOf(q) !== -1 || d.city.toLowerCase().indexOf(q) !== -1;
+    });
+    function csvEscape(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }
+    var lines = ["Réf.,Entreprise,Ville,Statut,Notes"];
+    rows.forEach(function (d) {
+      lines.push([d.ref, d.name, d.city, STATUS_LABEL[d.status], d.note].map(csvEscape).join(","));
+    });
+    var blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "candidatures-alternance.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
 
   // ---------- Theme toggle ----------
   var THEME_KEY = "geii-map-theme";
