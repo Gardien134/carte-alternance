@@ -340,6 +340,27 @@
     { ref:"E45", name:"Aquitaine Électronique", city:"Serres-Castet", lat:43.38, lon:-0.30, status:"sansreponse", note:"Jamais répondu ; sans objet depuis l'acceptation de CRESITT Industrie." }
   ];
 
+  // Écarte légèrement les entreprises situées à des coordonnées strictement identiques
+  // (même ville) pour qu'elles ne se superposent jamais pixel pour pixel sur la carte.
+  (function jitterDuplicateCoordinates() {
+    var groups = {};
+    DATA.forEach(function (d) {
+      var key = d.lat.toFixed(4) + "," + d.lon.toFixed(4);
+      (groups[key] = groups[key] || []).push(d);
+    });
+    Object.keys(groups).forEach(function (key) {
+      var group = groups[key];
+      if (group.length < 2) return;
+      var R = 0.012;
+      group.forEach(function (d, i) {
+        var angle = (2 * Math.PI * i) / group.length;
+        var latRad = d.lat * Math.PI / 180;
+        d.lat = d.lat + R * Math.cos(angle);
+        d.lon = d.lon + (R * Math.sin(angle)) / Math.cos(latRad);
+      });
+    });
+  })();
+
   var LAST_UPDATED = "23 juillet 2026";
   document.getElementById("metaDate").textContent = LAST_UPDATED;
   document.getElementById("countBadge").textContent = DATA.length + " entreprises";
@@ -359,7 +380,7 @@
 
   // ---------- Map ----------
   var FRANCE_CENTER = [46.6, 2.4], FRANCE_ZOOM = 6;
-  var map = L.map("leafletMap", { center: FRANCE_CENTER, zoom: FRANCE_ZOOM, minZoom: 5, maxZoom: 18 });
+  var map = L.map("leafletMap", { center: FRANCE_CENTER, zoom: FRANCE_ZOOM, minZoom: 5, maxZoom: 18, zoomAnimation: false });
 
   var satellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: "Imagerie &copy; Esri, Maxar, Earthstar Geographics",
@@ -373,7 +394,7 @@
 
   L.control.layers({ "Satellite": satellite, "Plan": streets }, null, { position: "topright" }).addTo(map);
 
-  var clusterGroup = L.markerClusterGroup({ maxClusterRadius: 30, spiderfyOnMaxZoom: true, showCoverageOnHover: false });
+  var clusterGroup = L.markerClusterGroup({ maxClusterRadius: 30, spiderfyOnMaxZoom: false, showCoverageOnHover: false, disableClusteringAtZoom: 16 });
   map.addLayer(clusterGroup);
 
   document.getElementById("mapRecenter").addEventListener("click", function () {
