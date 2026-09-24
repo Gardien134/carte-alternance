@@ -154,6 +154,29 @@
   .map-wrap { position: relative; height: 620px; }
   @media (max-width: 560px) { .map-wrap { height: 380px; } }
   #leafletMap { width: 100%; height: 100%; background: #0f3242; }
+  .map-loader {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  .map-loader.hidden { display: none; }
+  .spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .map-loader-text { color: #fff; font-size: 13px; }
+
   .leaflet-popup-content { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; min-width: 200px; }
   .leaflet-popup-content b { display: block; margin-bottom: 2px; font-size: 14px; }
   .popup-status { display: inline-block; padding: 1px 8px; border-radius: 999px; color: #fff; font-size: 11px; margin: 3px 0 6px; }
@@ -234,8 +257,8 @@
     .search-row { padding: 8px 12px; }
 
     table.bom th, table.bom td { padding: 8px 6px; font-size: 12.5px; }
-    table.bom td.ref { display: none; }
-    table.bom th[data-sort="ref"] { display: none; }
+    table.bom td.ref { font-size: 11px; color: var(--text-dim); }
+    table.bom th[data-sort="ref"] { font-size: 10px; }
   }
 
   @media (max-width: 420px) {
@@ -288,7 +311,11 @@
       </div>
       <div class="map-wrap">
         <div id="leafletMap"></div>
-        <button class="map-recenter" id="mapRecenter" aria-label="Recentrer la carte sur la France" title="Recentrer sur la France">⟲</button>
+        <div class="map-loader" id="mapLoader">
+          <div class="spinner"></div>
+          <div class="map-loader-text">Chargement de la carte…</div>
+        </div>
+        <button class="map-recenter" id="mapRecenter" aria-label="Recentrer la carte sur la France" title="Recentrer la carte sur la France">⟲</button>
       </div>
       <div class="detail" id="detail">
         <div class="detail__empty">Aucune entreprise sélectionnée — cliquez un point sur la carte ou une ligne de la liste ci-contre.</div>
@@ -300,7 +327,7 @@
         <h2>Nomenclature (liste complète)</h2>
         <span style="display:inline-flex;align-items:center;gap:10px;">
           <span id="countBadge" style="font-size:12.5px;color:var(--text-dim);"></span>
-          <button class="theme-toggle" id="exportCsv" type="button">⭳ CSV</button>
+          <button class="theme-toggle" id="exportCsv" type="button" aria-label="Télécharger les candidatures en fichier CSV">⭳ CSV</button>
         </span>
       </div>
       <div class="search-row">
@@ -327,11 +354,24 @@
   </footer>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onerror="handleScriptError('Leaflet')"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" onerror="handleScriptError('Leaflet Marker Cluster')"></script>
+<script>
+function handleScriptError(lib) {
+  var loader = document.getElementById("mapLoader");
+  if (loader) {
+    loader.innerHTML = '<div style="color:#fff;text-align:center;"><div style="font-size:18px;margin-bottom:8px;">⚠️</div><div>Erreur de chargement de ' + lib + '.</div><div style="font-size:12px;margin-top:8px;">Vérifiez votre connexion internet.</div></div>';
+  }
+}
+</script>
 <script>
 (function () {
   "use strict";
+
+  if (typeof L === "undefined") {
+    document.getElementById("mapLoader").innerHTML = '<div style="color:#fff;text-align:center;"><div style="font-size:18px;margin-bottom:8px;">⚠️</div><div>Leaflet n\'a pas pu charger.</div><div style="font-size:12px;margin-top:8px;">Vérifiez votre connexion internet.</div></div>';
+    return;
+  }
 
   var STATUS_LABEL = { accepte: "Accepté", attente: "En attente", refuse: "Refusé", sansreponse: "Sans réponse" };
   var STATUS_COLOR = { accepte: "#3f8f52", attente: "#c99a2e", refuse: "#bd4a3d", sansreponse: "#7c8794" };
@@ -387,20 +427,35 @@
   // Écarte légèrement les entreprises situées à des coordonnées strictement identiques
   // (même ville) pour qu'elles ne se superposent jamais pixel pour pixel sur la carte.
   (function jitterDuplicateCoordinates() {
-    var groups = {};
+    var DISTANCE_THRESHOLD = 0.001;
+    var groups = [];
+
     DATA.forEach(function (d) {
-      var key = d.lat.toFixed(4) + "," + d.lon.toFixed(4);
-      (groups[key] = groups[key] || []).push(d);
+      d.latOffset = 0;
+      d.lonOffset = 0;
+      var found = false;
+
+      for (var i = 0; i < groups.length; i++) {
+        var ref = groups[i][0];
+        var dist = Math.sqrt(Math.pow(d.lat - ref.lat, 2) + Math.pow(d.lon - ref.lon, 2));
+        if (dist < DISTANCE_THRESHOLD) {
+          groups[i].push(d);
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) groups.push([d]);
     });
-    Object.keys(groups).forEach(function (key) {
-      var group = groups[key];
+
+    groups.forEach(function (group) {
       if (group.length < 2) return;
       var R = 0.012;
       group.forEach(function (d, i) {
         var angle = (2 * Math.PI * i) / group.length;
         var latRad = d.lat * Math.PI / 180;
-        d.lat = d.lat + R * Math.cos(angle);
-        d.lon = d.lon + (R * Math.sin(angle)) / Math.cos(latRad);
+        d.latOffset = R * Math.cos(angle);
+        d.lonOffset = (R * Math.sin(angle)) / Math.cos(latRad);
       });
     });
   })();
@@ -426,6 +481,15 @@
   var FRANCE_CENTER = [46.6, 2.4], FRANCE_ZOOM = 6;
   var map = L.map("leafletMap", { center: FRANCE_CENTER, zoom: FRANCE_ZOOM, minZoom: 5, maxZoom: 18, zoomAnimation: false });
 
+  map.once("tileload", function () {
+    var loader = document.getElementById("mapLoader");
+    if (loader) loader.classList.add("hidden");
+  });
+  setTimeout(function () {
+    var loader = document.getElementById("mapLoader");
+    if (loader) loader.classList.add("hidden");
+  }, 3000);
+
   var satellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     attribution: "Imagerie &copy; Esri, Maxar, Earthstar Geographics",
     maxZoom: 19
@@ -445,16 +509,49 @@
     map.setView(FRANCE_CENTER, FRANCE_ZOOM);
   });
 
+  function escapeHTML(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
   function buildPopupHTML(d) {
-    return "<b>" + d.name + "</b>" +
-      '<span class="popup-status" style="background:' + STATUS_COLOR[d.status] + '">' + STATUS_LABEL[d.status] + "</span><br>" +
-      d.city + " · réf. " + d.ref + "<br>" + d.note +
-      (d.approx ? '<br><i>⚠ Position approximative.</i>' : "");
+    var popup = document.createElement('div');
+    var title = document.createElement('b');
+    title.textContent = d.name;
+    popup.appendChild(title);
+
+    var status = document.createElement('span');
+    status.className = 'popup-status';
+    status.style.background = STATUS_COLOR[d.status];
+    status.textContent = STATUS_LABEL[d.status];
+    popup.appendChild(status);
+    popup.appendChild(document.createElement('br'));
+
+    var meta = document.createElement('div');
+    meta.textContent = d.city + " · réf. " + d.ref;
+    popup.appendChild(meta);
+    popup.appendChild(document.createElement('br'));
+
+    var note = document.createElement('div');
+    note.textContent = d.note;
+    popup.appendChild(note);
+
+    if (d.approx) {
+      popup.appendChild(document.createElement('br'));
+      var approx = document.createElement('i');
+      approx.textContent = '⚠ Position approximative.';
+      popup.appendChild(approx);
+    }
+
+    return popup.innerHTML;
   }
 
   var markers = {};
   DATA.forEach(function (d) {
-    var marker = L.circleMarker([d.lat, d.lon], {
+    var displayLat = d.lat + d.latOffset;
+    var displayLon = d.lon + d.lonOffset;
+    var marker = L.circleMarker([displayLat, displayLon], {
       radius: 8,
       color: "#ffffff",
       weight: 1.4,
@@ -464,6 +561,12 @@
     });
     marker.bindPopup(buildPopupHTML(d));
     marker.on("click", function () { selectEntry(d.ref, false); });
+    marker.on("keydown", function (e) {
+      if (e.originalEvent.key === "Enter" || e.originalEvent.key === " ") {
+        e.originalEvent.preventDefault();
+        selectEntry(d.ref, false);
+      }
+    });
     markers[d.ref] = marker;
   });
 
@@ -479,6 +582,8 @@
     var btn = e.target.closest(".chip");
     if (!btn) return;
     var k = btn.getAttribute("data-status");
+    var anyActive = Object.keys(activeStatuses).some(function (key) { return key !== k && activeStatuses[key]; });
+    if (!anyActive && activeStatuses[k]) return;
     activeStatuses[k] = !activeStatuses[k];
     btn.setAttribute("aria-pressed", activeStatuses[k] ? "true" : "false");
     render();
@@ -521,12 +626,16 @@
   var searchInput = document.getElementById("search");
   var sortState = { key: "ref", dir: 1 };
 
+  function normalizeText(text) {
+    return text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  }
+
   function render() {
-    var q = searchInput.value.trim().toLowerCase();
+    var q = normalizeText(searchInput.value.trim());
     var visible = DATA.filter(function (d) {
       if (!activeStatuses[d.status]) return false;
       if (!q) return true;
-      return d.name.toLowerCase().indexOf(q) !== -1 || d.city.toLowerCase().indexOf(q) !== -1;
+      return normalizeText(d.name).indexOf(q) !== -1 || normalizeText(d.city).indexOf(q) !== -1;
     });
 
     var sk = sortState.key, sd = sortState.dir;
@@ -588,16 +697,16 @@
   });
 
   document.getElementById("exportCsv").addEventListener("click", function () {
-    var q = searchInput.value.trim().toLowerCase();
+    var q = normalizeText(searchInput.value.trim());
     var rows = DATA.filter(function (d) {
       if (!activeStatuses[d.status]) return false;
       if (!q) return true;
-      return d.name.toLowerCase().indexOf(q) !== -1 || d.city.toLowerCase().indexOf(q) !== -1;
+      return normalizeText(d.name).indexOf(q) !== -1 || normalizeText(d.city).indexOf(q) !== -1;
     });
     function csvEscape(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }
-    var lines = ["Réf.,Entreprise,Ville,Statut,Notes"];
+    var lines = ["Réf.,Entreprise,Ville,Statut,Position approximative,Notes"];
     rows.forEach(function (d) {
-      lines.push([d.ref, d.name, d.city, STATUS_LABEL[d.status], d.note].map(csvEscape).join(","));
+      lines.push([d.ref, d.name, d.city, STATUS_LABEL[d.status], d.approx ? "Oui" : "Non", d.note].map(csvEscape).join(","));
     });
     var blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
     var url = URL.createObjectURL(blob);
@@ -614,7 +723,16 @@
   var THEME_KEY = "geii-map-theme";
   var themeBtn = document.getElementById("themeToggle");
   var themeLabel = document.getElementById("themeToggleLabel");
-  function getStoredTheme() { try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; } }
+  var sessionTheme = null;
+
+  function getStoredTheme() {
+    if (sessionTheme) return sessionTheme;
+    try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; }
+  }
+  function setStoredTheme(theme) {
+    sessionTheme = theme;
+    try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+  }
   function getSystemTheme() { return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"; }
   function currentEffectiveTheme() { return document.documentElement.getAttribute("data-theme") || getSystemTheme(); }
   function updateThemeLabel() {
@@ -628,7 +746,7 @@
   themeBtn.addEventListener("click", function () {
     var next = currentEffectiveTheme() === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
-    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+    setStoredTheme(next);
     updateThemeLabel();
   });
 
